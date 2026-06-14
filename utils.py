@@ -1,6 +1,8 @@
+import os
 import matplotlib.pyplot as plt
 import torch
 import numpy as np
+from config import CONFIG
 
 
 def get_voc_colormap():
@@ -15,13 +17,12 @@ def get_voc_colormap():
     return colormap
 
 
-def visualize_prediction(model, loader, device):
+def visualize_prediction(model, loader, device, save_name="prediction.png"):
     model.eval()
 
     try:
         images, masks = next(iter(loader))
     except StopIteration:
-        print("Loader empty.")
         return
 
     cmap = get_voc_colormap()
@@ -38,19 +39,26 @@ def visualize_prediction(model, loader, device):
     plt.figure(figsize=(14, 7))
 
     plt.subplot(1, 2, 1)
-    plt.title("Ground Truth (Pascal VOC)")
     plt.imshow(cmap[gt_img])
     plt.axis('off')
 
     plt.subplot(1, 2, 2)
-    plt.title("Model Prediction (EPIC)")
     plt.imshow(cmap[pred_img])
     plt.axis('off')
 
     plt.tight_layout()
-    plt.show()
+
+    results_dir = CONFIG.get("results_dir", "./results")
+    os.makedirs(results_dir, exist_ok=True)
+    save_path = os.path.join(results_dir, save_name)
+    plt.savefig(save_path)
+    plt.close()
 
 
 def save_checkpoint(model, filename="deeplab_checkpoint.pth"):
-    torch.save(model.state_dict(), filename)
-    print(f"Checkpoint saved as: {filename}")
+    results_dir = CONFIG.get("results_dir", "./results")
+    os.makedirs(results_dir, exist_ok=True)
+
+    filename_base = os.path.basename(filename)
+    save_path = os.path.join(results_dir, filename_base)
+    torch.save(model.state_dict(), save_path)
