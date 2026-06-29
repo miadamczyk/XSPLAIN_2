@@ -1,6 +1,5 @@
 import os
 import torch
-import random
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -11,6 +10,14 @@ from torch.utils.data import DataLoader
 from config import CONFIG
 from dataset import VOCDatasetManager
 from model import get_deeplab_model
+
+VOC_CLASSES = {
+    0: "background", 1: "aeroplane", 2: "bicycle", 3: "bird", 4: "boat",
+    5: "bottle", 6: "bus", 7: "car", 8: "cat", 9: "chair",
+    10: "cow", 11: "diningtable", 12: "dog", 13: "horse", 14: "motorbike",
+    15: "person", 16: "pottedplant", 17: "sheep", 18: "sofa", 19: "train",
+    20: "tvmonitor"
+}
 
 
 def load_trained_model(checkpoint_path):
@@ -50,7 +57,7 @@ def build_exemplar_database(model, dataset, save_path):
     loader = DataLoader(dataset, batch_size=CONFIG["batch_size"], shuffle=False)
 
     with torch.no_grad():
-        for images, _ in tqdm(loader):
+        for images, _ in tqdm(loader, desc="Building exemplar database"):
             images = images.to(device)
             _ = model(images)
             features = model.classifier[4].last_disentangled_features
@@ -65,6 +72,7 @@ def build_exemplar_database(model, dataset, save_path):
             all_scores.append(batch_scores.cpu())
 
     scores_matrix = torch.cat(all_scores, dim=0)
+
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(scores_matrix, save_path)
     return scores_matrix
@@ -103,52 +111,81 @@ def visualize_full_epic_analysis(test_img, gt_mask, pred_mask, features, exempla
     img_size = img_vis.shape[:2]
     num_rows = len(top_channels)
 
-    fig = plt.figure(figsize=(18, 4 * (num_rows + 1)))
-    gs = fig.add_gridspec(num_rows + 1, 5, hspace=0.4, wspace=0.1)
+    H_feat, W_feat = features.shape[2], features.shape[3]
+    pred_mask_tensor = torch.tensor(pred_mask, dtype=torch.float32)
+    pred_mask_resized = F.interpolate(
+        pred_mask_tensor.unsqueeze(0).unsqueeze(0),
+        size=(H_feat, W_feat),
+        mode='nearest'
+    ).squeeze().numpy()
+
+    fig = plt.figure(figsize=(22, 4 * (num_rows + 1)))
+    gs = fig.add_gridspec(num_rows + 1, 6, hspace=0.4, wspace=0.1)
 
     ax_input = fig.add_subplot(gs[0, 0])
     ax_input.imshow(img_vis)
-    ax_input.set_title("Oryginalny obraz")
+    ax_input.set_title("Original Image")
 
-    ax_gt = fig.add_subplot(gs[0, 1])
-    ax_gt.imshow(gt_mask.cpu().numpy(), cmap='viridis')
+    ax_mask_title = fig.add_subplot(gs[0, 1])
+    ax_mask_title.axis('off')
+    ax_mask_title.set_title("Isolated Class")
+
+    ax_gt = fig.add_subplot(gs[0, 2])
+    gt_vis = gt_mask.cpu().numpy().copy()
+
+    gt_vis[gt_vis == 255] = 0
+
+    ax_gt.imshow(gt_vis, cmap='viridis', vmin=0, vmax=20)
     ax_gt.set_title("Ground Truth")
 
-    ax_pred = fig.add_subplot(gs[0, 2])
-    ax_pred.imshow(pred_mask, cmap='viridis')
-    ax_pred.set_title("Predykcja")
+    ax_pred = fig.add_subplot(gs[0, 3])
+
+    ax_pred.imshow(pred_mask, cmap='viridis', vmin=0, vmax=20)
+    ax_pred.set_title("Prediction")
 
     for row_idx, c_idx in enumerate(top_channels):
         grid_row = row_idx + 1
         cls_id = chosen_classes[row_idx]
+        cls_name = VOC_CLASSES.get(cls_id, str(cls_id))
 
         ax_test = fig.add_subplot(gs[grid_row, 0])
         ax_test.imshow(img_vis)
-
-        if top_scores is not None:
-            ax_test.set_title(f"Klasa: {cls_id} | Kanał: {c_idx}\nWynik EPIC: {top_scores[row_idx]:.4f}")
+        ax_test.set_title(f"{cls_name} (Ch: {c_idx})")
 
         abs_feature = torch.abs(features[0, c_idx]).cpu().numpy()
-        tx, ty = get_max_activation_patch(abs_feature, img_size, patch_size)
+
+        masked_feature = np.copy(abs_feature)
+        masked_feature[pred_mask_resized != cls_id] = -1.0
+
+        tx, ty = get_max_activation_patch(masked_feature, img_size, patch_size)
 
         ax_test.add_patch(
             patches.Rectangle((tx, ty), patch_size, patch_size, linewidth=3, edgecolor='red', facecolor='none'))
 
+        ax_masked = fig.add_subplot(gs[grid_row, 1])
+
+        masked_img = np.zeros_like(img_vis)
+        masked_img[:] = [68 / 255.0, 1 / 255.0, 84 / 255.0]
+
+        mask_bool = (pred_mask == cls_id)
+        masked_img[mask_bool] = img_vis[mask_bool]
+
+        ax_masked.imshow(masked_img)
+
         train_list = exemplars_data.get(c_idx, [])
         for col_idx in range(1, 5):
-            ax_ex = fig.add_subplot(gs[grid_row, col_idx])
+            ax_ex = fig.add_subplot(gs[grid_row, col_idx + 1])
             if col_idx - 1 < len(train_list):
-                ex_score, ex_tensor, ex_f_map = train_list[col_idx - 1]
+                _, ex_tensor, ex_f_map = train_list[col_idx - 1]
                 ex_img = get_img_for_vis(ex_tensor)
                 ax_ex.imshow(ex_img)
-                ax_ex.set_title(f"Score: {ex_score:.4f}")
 
                 ex_x, ex_y = get_max_activation_patch(ex_f_map, ex_img.shape[:2], patch_size)
                 ax_ex.add_patch(
                     patches.Rectangle((ex_x, ex_y), patch_size, patch_size, linewidth=3, edgecolor='#00FF00',
                                       facecolor='none'))
             else:
-                ax_ex.text(0.5, 0.5, "Brak\ndanych", ha='center')
+                ax_ex.text(0.5, 0.5, "No\nData", ha='center')
 
     for ax in fig.axes:
         ax.set_xticks([])
@@ -159,10 +196,7 @@ def visualize_full_epic_analysis(test_img, gt_mask, pred_mask, features, exempla
     plt.close()
 
 
-# Zmiana tutaj: dodano argument num_prototypes
-# Zastąp w swoim pliku CAŁĄ funkcję run_prediction_flow tym kodem:
-
-def run_prediction_flow(checkpoint_path=None, num_images_to_process=5, min_classes=1, num_prototypes=1):
+def run_prediction_flow(checkpoint_path=None, min_classes=1, num_prototypes=2):
     results_dir = CONFIG.get("results_dir", "./results")
     output_dir = os.path.join(results_dir, "epic_results")
     os.makedirs(output_dir, exist_ok=True)
@@ -175,111 +209,110 @@ def run_prediction_flow(checkpoint_path=None, num_images_to_process=5, min_class
 
     dm = VOCDatasetManager(CONFIG)
     train_loader, test_loader = dm.get_dataloaders()
+    dataset = test_loader.dataset
 
     db_path = os.path.join(output_dir, "exemplar_scores.pt")
-    if not os.path.exists(db_path):
-        scores_matrix = build_exemplar_database(model, train_loader.dataset, db_path)
+
+    if os.path.exists(db_path):
+        saved_data = torch.load(db_path, map_location="cpu")
+        if isinstance(saved_data, dict) and 'scores' in saved_data:
+            scores_matrix = saved_data['scores']
+        else:
+            scores_matrix = saved_data
     else:
-        scores_matrix = torch.load(db_path, map_location="cpu")
+        scores_matrix = build_exemplar_database(model, train_loader.dataset, db_path)
 
-    dataset_size = len(test_loader.dataset)
-    random_indices = random.sample(range(dataset_size), dataset_size)
+    dataset_size = len(dataset)
 
-    processed_count = 0
-    pbar = tqdm(total=min(num_images_to_process, dataset_size),
-                desc=f"Przetwarzanie (min. klas: {min_classes}, prototypy/klasę: {num_prototypes})")
+    if hasattr(dataset, 'images'):
+        image_names = [os.path.splitext(os.path.basename(path))[0] for path in dataset.images]
+    else:
+        image_names = [str(i) for i in range(dataset_size)]
 
-    for idx in random_indices:
-        if processed_count >= num_images_to_process:
-            break
+    folder_counts = {}
+    pbar = tqdm(total=dataset_size, desc="Processing full test set")
 
-        img_tensor, gt_mask = test_loader.dataset[idx]
+    for idx in range(dataset_size):
+        img_tensor, gt_mask = dataset[idx]
+        img_id = image_names[idx]
+
         input_batch = img_tensor.unsqueeze(0).to(CONFIG["device"])
 
-        # 1. Najpierw robimy predykcję (musimy mieć predykcję, żeby sprawdzić, co wykrył model)
         with torch.no_grad():
             output = model(input_batch)['out']
             pred_mask = torch.argmax(output, dim=1).squeeze().cpu().numpy()
             epic_features = model.classifier[4].last_disentangled_features
 
-        # 2. Szukamy klas w masce predykcji (używamy numpy, bo pred_mask to tablica numpy)
         unique_classes = np.unique(pred_mask)
         unique_classes = [int(c) for c in unique_classes if c != 0 and c != 255]
 
-        # 3. Jeśli model nie wykrył minimalnej liczby klas, pomijamy zdjęcie
-        if len(unique_classes) < min_classes:
+        num_classes_found = len(unique_classes)
+
+        if num_classes_found < min_classes:
+            pbar.update(1)
             continue
 
-        features_2d = epic_features.squeeze(0).reshape(epic_features.shape[1], -1)
+        B, C, H_feat, W_feat = epic_features.shape
 
-        probs = F.softmax(features_2d, dim=-1)
-        entropy = - (probs * torch.log(probs + 1e-8)).sum(dim=-1)
-
-        channel_relevance = torch.abs(features_2d).max(dim=-1)[0]
-        combined_score = channel_relevance / (entropy + 1e-4)
-
-        sorted_indices = torch.argsort(combined_score, descending=True).cpu().numpy()
-        sorted_scores = combined_score[sorted_indices].cpu().numpy()
+        pred_mask_tensor = torch.tensor(pred_mask, device=CONFIG["device"])
+        pred_mask_resized = F.interpolate(
+            pred_mask_tensor.unsqueeze(0).unsqueeze(0).float(),
+            size=(H_feat, W_feat),
+            mode='nearest'
+        ).squeeze().long()
 
         chosen_channels = []
         chosen_scores = []
         chosen_classes = []
 
-        img_size = gt_mask.shape
-        patch_size = 40
+        features_2d = epic_features.squeeze(0).reshape(C, -1)
+        probs = F.softmax(features_2d, dim=-1)
+        entropy = - (probs * torch.log(probs + 1e-8)).sum(dim=-1)
 
-        # --- Analizujemy wszystkie kanały na podstawie PREDYKCJ ---
-        channel_hits = []
-        for i in range(len(sorted_indices)):
-            c_idx = sorted_indices[i]
-            score = sorted_scores[i]
+        for cls_id in unique_classes:
+            cls_mask = (pred_mask_resized == cls_id)
+            features_for_cls = epic_features[0, :, cls_mask]
 
-            abs_feature = torch.abs(epic_features[0, c_idx]).cpu().numpy()
-            tx, ty = get_max_activation_patch(abs_feature, img_size, patch_size)
+            if features_for_cls.shape[1] == 0:
+                continue
 
-            # Wycianamy patch z maski PREDYKCJ, nie z gt_mask!
-            patch_mask = pred_mask[ty:ty + patch_size, tx:tx + patch_size]
+            max_acts_for_cls = features_for_cls.abs().max(dim=1)[0]
 
-            patch_classes = np.unique(patch_mask).tolist()
-            channel_hits.append({
-                'c_idx': c_idx,
-                'score': score,
-                'classes': patch_classes
-            })
+            combined_score_for_cls = max_acts_for_cls / (entropy + 1e-4)
 
-        # --- Wybieranie prototypów dla klas ---
-        for cls in unique_classes:
-            found_for_this_class = 0
+            topk_scores, topk_indices = torch.topk(combined_score_for_cls, min(num_prototypes, C))
 
-            for hit in channel_hits:
-                if cls in hit['classes']:
-                    chosen_channels.append(hit['c_idx'])
-                    chosen_scores.append(hit['score'])
-                    chosen_classes.append(cls)
-                    found_for_this_class += 1
-
-                    if found_for_this_class >= num_prototypes:
-                        break
+            for score, c_idx in zip(topk_scores, topk_indices):
+                chosen_channels.append(c_idx.item())
+                chosen_scores.append(score.item())
+                chosen_classes.append(cls_id)
 
         if len(chosen_channels) == 0:
+            pbar.update(1)
             continue
 
-        top_channels = np.array(chosen_channels, dtype=int)
-        top_scores = np.array(chosen_scores, dtype=float)
+        unique_top_channels = np.unique(chosen_channels)
+        exemplars_data = find_train_exemplars(
+            model, train_loader.dataset, scores_matrix, unique_top_channels
+        )
 
-        unique_top_channels = np.unique(top_channels)
-        exemplars_data = find_train_exemplars(model, train_loader.dataset, scores_matrix, unique_top_channels)
+        class_dir = os.path.join(output_dir, f"class {num_classes_found}")
+        os.makedirs(class_dir, exist_ok=True)
 
-        save_filename = os.path.join(output_dir, f"epic_analysis_{processed_count + 1}_img_{idx}.png")
-        visualize_full_epic_analysis(img_tensor, gt_mask, pred_mask, epic_features, exemplars_data, top_channels,
-                                     top_scores, chosen_classes, save_path=save_filename)
+        save_filename = os.path.join(class_dir, f"{img_id}.png")
 
-        processed_count += 1
+        visualize_full_epic_analysis(img_tensor, gt_mask, pred_mask, epic_features, exemplars_data, chosen_channels,
+                                     chosen_scores, chosen_classes, save_path=save_filename)
+
+        folder_counts[num_classes_found] = folder_counts.get(num_classes_found, 0) + 1
         pbar.update(1)
 
     pbar.close()
 
+    print("\n[INFO] Generation completed. Saved objects status:")
+    for num_cls, count in sorted(folder_counts.items()):
+        print(f" -> Folder 'class {num_cls}': {count} images.")
+
+
 if __name__ == "__main__":
-    # Przykład użycia:
-    # 5 obrazów | Min. 2 klasy na obrazie | 3 najlepsze kanały (prototypy) wyciągnięte na każdą klasę
-    run_prediction_flow(num_images_to_process=5, min_classes=3, num_prototypes=3)
+    run_prediction_flow(min_classes=1, num_prototypes=2)
