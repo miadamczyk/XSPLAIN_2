@@ -65,13 +65,19 @@ def main():
 
     try:
         current_loader = train_loader
-        num_prototypes = 100
 
         for epoch in range(total_epochs):
 
             if apply_epic and epoch % 2 == 0:
                 if total_epochs > 1:
-                    num_prototypes = int(100 - (100 - 5) * (epoch / (total_epochs - 1)))
+                    target_epoch = (total_epochs * 3) // 5
+                    
+                    if target_epoch > 0:
+                        progress = min(1.0, epoch / target_epoch)
+                    else:
+                        progress = 1.0
+                        
+                    num_prototypes = int(100 - (100 - 5) * progress)
                 else:
                     num_prototypes = 5
 
