@@ -196,7 +196,11 @@ def visualize_full_epic_analysis(test_img, gt_mask, pred_mask, features, exempla
     plt.close()
 
 
-def run_prediction_flow(checkpoint_path=None, min_classes=1, num_prototypes=2):
+def run_prediction_flow():
+    checkpoint_path = None
+    min_classes = 1
+    num_prototypes = 2
+
     results_dir = CONFIG.get("results_dir", "./results")
     output_dir = os.path.join(results_dir, "epic_results")
     os.makedirs(output_dir, exist_ok=True)
@@ -315,4 +319,4 @@ def run_prediction_flow(checkpoint_path=None, min_classes=1, num_prototypes=2):
 
 
 if __name__ == "__main__":
-    run_prediction_flow(min_classes=1, num_prototypes=2)
+    run_prediction_flow()
